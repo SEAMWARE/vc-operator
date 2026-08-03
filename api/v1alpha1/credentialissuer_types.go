@@ -107,6 +107,7 @@ type CredentialIssuerStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=ciss
 // +kubebuilder:printcolumn:name="Issuer URL",type=string,JSONPath=`.spec.issuerURL`,description="The URL of the OID4VCI credential issuer"
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.issuerType`,description="The issuer implementation type"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`,description="Whether the issuer is ready"

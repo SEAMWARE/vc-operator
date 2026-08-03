@@ -203,7 +203,7 @@ in the referenced Secret.
 
 ### CredentialIssuer
 
-Configures an OID4VCI credential issuer endpoint.
+Configures an OID4VCI credential issuer endpoint. Short name: `ciss` (e.g. `kubectl get ciss`).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -225,7 +225,7 @@ Configures an OID4VCI credential issuer endpoint.
 ### VerifiableCredentialRequest
 
 Declares a credential that a service needs. The operator obtains and renews it
-automatically.
+automatically. Short name: `vcr` (e.g. `kubectl get vcr`).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|

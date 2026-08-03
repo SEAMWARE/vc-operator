@@ -144,6 +144,7 @@ type VerifiableCredentialRequestStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=vcr
 // +kubebuilder:printcolumn:name="Issuer",type=string,JSONPath=`.spec.issuerRef.name`,description="The referenced CredentialIssuer"
 // +kubebuilder:printcolumn:name="Credential Type",type=string,JSONPath=`.spec.credentialType`,description="The requested credential type"
 // +kubebuilder:printcolumn:name="Format",type=string,JSONPath=`.spec.format`,description="The credential format"
