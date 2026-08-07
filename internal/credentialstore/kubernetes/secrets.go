@@ -135,8 +135,9 @@ func (s *SecretStore) Store(ctx context.Context, ref credentialstore.TargetRef, 
 	return s.client.Update(ctx, existing)
 }
 
-// Retrieve loads a credential from a Kubernetes Secret. Returns an error
-// if the Secret does not exist or cannot be read.
+// Retrieve loads a credential from a Kubernetes Secret. When the Secret does
+// not exist, the returned error wraps credentialstore.ErrNotFound so that
+// callers can tell an absent credential from a transient API failure.
 func (s *SecretStore) Retrieve(ctx context.Context, ref credentialstore.TargetRef) (*credentialstore.CredentialData, error) {
 	secret := &corev1.Secret{}
 	err := s.client.Get(ctx, types.NamespacedName{
@@ -144,6 +145,10 @@ func (s *SecretStore) Retrieve(ctx context.Context, ref credentialstore.TargetRe
 		Name:      ref.Name,
 	}, secret)
 	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil, fmt.Errorf("secret %s/%s not found: %w",
+				ref.Namespace, ref.Name, credentialstore.ErrNotFound)
+		}
 		return nil, fmt.Errorf("failed to get secret %s/%s: %w", ref.Namespace, ref.Name, err)
 	}
 
@@ -237,6 +242,9 @@ func buildSecret(ref credentialstore.TargetRef, data *credentialstore.Credential
 }
 
 // parseSecretData extracts CredentialData from a Kubernetes Secret's data map.
+// A missing or empty credential key means the Secret carries no usable
+// credential, which is reported as credentialstore.ErrNotFound so that callers
+// treat an emptied Secret the same as a deleted one.
 func parseSecretData(secret *corev1.Secret, key string) (*credentialstore.CredentialData, error) {
 	credKey := key
 	if credKey == "" {
@@ -244,8 +252,9 @@ func parseSecretData(secret *corev1.Secret, key string) (*credentialstore.Creden
 	}
 
 	credBytes, ok := secret.Data[credKey]
-	if !ok {
-		return nil, fmt.Errorf("secret %s/%s does not contain key %q", secret.Namespace, secret.Name, credKey)
+	if !ok || len(credBytes) == 0 {
+		return nil, fmt.Errorf("secret %s/%s does not contain key %q: %w",
+			secret.Namespace, secret.Name, credKey, credentialstore.ErrNotFound)
 	}
 
 	data := &credentialstore.CredentialData{
