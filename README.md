@@ -49,6 +49,10 @@ and automatically renews them before expiry.
   (e.g., HashiCorp Vault) can be added.
 - **Credential Rotation Safety** -- Previous credential is retained alongside the
   new one during rotation, giving consuming services a grace period.
+- **Self-Healing Secrets** -- The operator watches the credential Secrets it
+  owns. If one is deleted or emptied out-of-band, a replacement credential is
+  requested from the issuer and the Secret is re-created immediately, without
+  waiting for the scheduled renewal.
 - **Prometheus Metrics** -- Built-in metrics for credentials issued, renewed,
   errors, and time-to-expiry.
 - **Holder Identity Binding** -- Optionally bind credentials to a specific holder
@@ -273,6 +277,22 @@ following structure:
 - `vc-operator.io/credential-type: <credential-type>`
 - `vc-operator.io/source-cr: <namespace>/<cr-name>`
 
+**Self-healing:** The Secret is owned by its `VerifiableCredentialRequest`, and
+the operator watches it. Deleting the Secret -- or emptying the credential key --
+triggers an immediate reconciliation instead of waiting for
+`status.nextRenewalTime`. Two consequences are worth knowing:
+
+- The operator keeps no copy of the credential anywhere, so restoring the Secret
+  costs a **full round-trip to the issuer**, exactly like a renewal.
+- The restored Secret has **no `previousCredential`**: the rotation buffer was
+  stored inside the deleted Secret and is lost with it, so consuming services
+  still holding the old credential get no grace period.
+
+A restore is recorded as a renewal: it increments `status.renewalCount`, sets
+`status.lastRenewalTime` and increments `vc_operator_credentials_renewed_total`.
+The distinguishing signal is the `StoredCredentialMissing` Warning event emitted
+when the loss is detected.
+
 ## Configuration Reference
 
 ### Operator Flags
@@ -364,6 +384,25 @@ kubectl describe verifiablecredentialrequest <name>
    kubectl logs -n vc-operator-system deployment/vc-operator-controller-manager
    ```
 3. Ensure the `renewBefore` duration is less than the credential's lifetime.
+
+### Deleted credential Secret keeps coming back
+
+**Symptom:** You delete a credential Secret and the operator re-creates it within
+seconds.
+
+This is intentional -- see [Stored Secret Format](#stored-secret-format). The
+Secret is declared by a `VerifiableCredentialRequest`, so as long as that CR
+exists the operator keeps its Secret present.
+
+1. Confirm the operator is the cause:
+   ```bash
+   kubectl get events -n <namespace> --field-selector reason=StoredCredentialMissing
+   ```
+2. To remove the Secret for good, delete the CR that declares it. The Secret is
+   garbage-collected via its owner reference:
+   ```bash
+   kubectl delete vcr <name> -n <namespace>
+   ```
 
 ### View operator events
 

@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"time"
 
@@ -31,8 +32,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	vcv1alpha1 "github.com/wistefan/vc-operator/api/v1alpha1"
 	"github.com/wistefan/vc-operator/internal/credential"
@@ -77,6 +81,10 @@ const (
 	// ActionResolveHolderKey is the event action recorded when the controller
 	// resolves the holder key Secret for proof-of-possession generation.
 	ActionResolveHolderKey = "ResolveHolderKey"
+
+	// ActionRestoreCredential is the event action recorded when the controller
+	// re-issues a credential because the stored one disappeared.
+	ActionRestoreCredential = "RestoreCredential"
 
 	// HolderKeySecretKeyPEM is the preferred data key in the holder key Secret
 	// for the PEM-encoded ECDSA private key.
@@ -131,12 +139,45 @@ func (r *VerifiableCredentialRequestReconciler) now() time.Time {
 	return time.Now()
 }
 
+// storedCredentialMissing reports whether the credential for this request is
+// absent from the CredentialStore, either because the target Secret was
+// deleted out-of-band or because it exists but carries no credential payload.
+//
+// A transient backend failure is deliberately reported as "present": a
+// successful reconciliation resets the workqueue rate limiter, so treating
+// every backend hiccup as a missing credential would let a flaky backend drive
+// an unthrottled re-issuance storm against the issuer. The next renewal
+// requeue, or the next Secret event, re-checks.
+func (r *VerifiableCredentialRequestReconciler) storedCredentialMissing(
+	ctx context.Context,
+	vcReq *vcv1alpha1.VerifiableCredentialRequest,
+) bool {
+	data, err := r.CredentialStore.Retrieve(ctx, r.targetRefFor(vcReq))
+	if errors.Is(err, credentialstore.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to check stored credential; assuming it is present",
+			"targetSecret", vcReq.Spec.TargetSecretRef.Name)
+		return false
+	}
+	return data == nil || len(data.Credential) == 0
+}
+
 // skipIfNotDueForRenewal checks whether the credential is already obtained,
-// valid, and not yet due for renewal. Returns (result, true) to skip the
-// full reconciliation when no work is needed, or (_, false) to proceed.
+// still stored, valid, and not yet due for renewal. Returns (result, true) to
+// skip the full reconciliation when no work is needed, or (_, false) to
+// proceed. A credentialMissing of true forces a full reconciliation regardless
+// of the renewal schedule, so that a credential lost out-of-band is re-issued
+// immediately instead of waiting for the scheduled renewal.
 func (r *VerifiableCredentialRequestReconciler) skipIfNotDueForRenewal(
 	vcReq *vcv1alpha1.VerifiableCredentialRequest,
+	credentialMissing bool,
 ) (ctrl.Result, bool) {
+	if credentialMissing {
+		return ctrl.Result{}, false
+	}
+
 	readyCondition := meta.FindStatusCondition(vcReq.Status.Conditions, vcv1alpha1.ConditionTypeReady)
 	if readyCondition == nil || readyCondition.Status != metav1.ConditionTrue {
 		return ctrl.Result{}, false
@@ -195,12 +236,23 @@ func (r *VerifiableCredentialRequestReconciler) Reconcile(ctx context.Context, r
 		return ctrl.Result{}, err
 	}
 
-	// Step 1b: Skip reconciliation if the credential is already valid and
-	// not yet due for renewal. Status updates from handleSuccess trigger the
+	// Step 1b: Check whether the stored credential is still present. The target
+	// Secret may have been deleted or emptied out-of-band, in which case the
+	// credential must be re-issued even though it is not yet due for renewal.
+	credentialMissing := r.storedCredentialMissing(ctx, &vcReq)
+
+	// Step 1c: Skip reconciliation if the credential is stored, still valid,
+	// and not yet due for renewal. Status updates from handleSuccess trigger the
 	// informer, which re-invokes Reconcile; without this guard, every
 	// successful issuance immediately causes another full credential request.
-	if result, skip := r.skipIfNotDueForRenewal(&vcReq); skip {
+	if result, skip := r.skipIfNotDueForRenewal(&vcReq, credentialMissing); skip {
 		return result, nil
+	}
+
+	// A credential missing after a previous successful issuance is an
+	// out-of-band deletion; surface it before spending an issuer round-trip.
+	if credentialMissing && vcReq.Status.LastIssuanceTime != nil {
+		r.recordCredentialMissing(ctx, &vcReq)
 	}
 
 	// Step 2: Look up the referenced CredentialIssuer and verify it is Ready.
@@ -394,16 +446,12 @@ func (r *VerifiableCredentialRequestReconciler) resolveRenewBefore(renewBefore *
 	return credential.DefaultRenewBeforeDuration
 }
 
-// storeCredential persists the obtained credential via the CredentialStore
-// backend, setting up proper owner references for garbage collection.
-func (r *VerifiableCredentialRequestReconciler) storeCredential(
-	ctx context.Context,
+// targetRefFor builds the CredentialStore reference for the request's target
+// Secret, including the owner information used for garbage collection.
+func (r *VerifiableCredentialRequestReconciler) targetRefFor(
 	vcReq *vcv1alpha1.VerifiableCredentialRequest,
-	credStr string,
-	format string,
-	parsed *credential.ParsedCredential,
-) error {
-	targetRef := credentialstore.TargetRef{
+) credentialstore.TargetRef {
+	return credentialstore.TargetRef{
 		Namespace: vcReq.Namespace,
 		Name:      vcReq.Spec.TargetSecretRef.Name,
 		Key:       vcReq.Spec.TargetSecretRef.Key,
@@ -415,6 +463,18 @@ func (r *VerifiableCredentialRequestReconciler) storeCredential(
 		OwnerUID:  vcReq.UID,
 		OwnerName: vcReq.Name,
 	}
+}
+
+// storeCredential persists the obtained credential via the CredentialStore
+// backend, setting up proper owner references for garbage collection.
+func (r *VerifiableCredentialRequestReconciler) storeCredential(
+	ctx context.Context,
+	vcReq *vcv1alpha1.VerifiableCredentialRequest,
+	credStr string,
+	format string,
+	parsed *credential.ParsedCredential,
+) error {
+	targetRef := r.targetRefFor(vcReq)
 
 	// Try to retrieve existing credential for rotation buffer.
 	var previousCredential []byte
@@ -693,6 +753,24 @@ func (r *VerifiableCredentialRequestReconciler) setVCRequestErrorStatus(
 	return nil
 }
 
+// recordCredentialMissing logs and emits a Warning event reporting that a
+// previously issued credential is no longer present in the storage backend.
+// It is a Warning rather than a Normal event because an operator-managed
+// resource was destroyed from outside the operator, and recovering from it
+// costs a full round-trip to the issuer.
+func (r *VerifiableCredentialRequestReconciler) recordCredentialMissing(
+	ctx context.Context,
+	vcReq *vcv1alpha1.VerifiableCredentialRequest,
+) {
+	logf.FromContext(ctx).Info("Stored credential missing; triggering re-issuance",
+		"targetSecret", vcReq.Spec.TargetSecretRef.Name)
+
+	msg := fmt.Sprintf("Stored credential %s/%s is missing; requesting a replacement from the issuer",
+		vcReq.Namespace, vcReq.Spec.TargetSecretRef.Name)
+	r.EventRecorder.Eventf(vcReq, nil, corev1.EventTypeWarning,
+		vcv1alpha1.ReasonStoredCredentialMissing, ActionRestoreCredential, msg)
+}
+
 // recordErrorMetric increments the credentials_errors_total counter if metrics
 // are configured. The reason label identifies the error category.
 func (r *VerifiableCredentialRequestReconciler) recordErrorMetric(vcReq *vcv1alpha1.VerifiableCredentialRequest, reason string) {
@@ -936,11 +1014,48 @@ func (r *VerifiableCredentialRequestReconciler) handleCredentialOfferError(
 }
 
 // SetupWithManager sets up the VerifiableCredentialRequest controller with the
-// Manager. It watches VerifiableCredentialRequest resources and triggers
-// reconciliation on changes.
+// Manager. It watches VerifiableCredentialRequest resources and the credential
+// Secrets they own, so that a Secret deleted or emptied out-of-band is
+// re-created without waiting for the scheduled renewal.
 func (r *VerifiableCredentialRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&vcv1alpha1.VerifiableCredentialRequest{}).
+		Owns(&corev1.Secret{}, builder.WithPredicates(credentialSecretPredicate())).
 		Named("verifiablecredentialrequest").
 		Complete(r)
+}
+
+// credentialSecretPredicate filters events on owned credential Secrets down to
+// the ones that can indicate credential loss. Creates and updates produced by
+// the operator's own Store calls are ignored: the operator's own writes can
+// never be the thing it needs to react to, and letting them through would
+// enqueue a redundant reconciliation after every issuance as well as one per
+// managed Secret on every informer resync. Only deletions, and updates that
+// removed or emptied a data key, are relevant.
+//
+// The data-key check is deliberately a superset of "the credential key was
+// emptied": the predicate has no access to spec.targetSecretRef.key. A false
+// positive costs one cached read, after which the reconciliation skips.
+func credentialSecretPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return true },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldSecret, okOld := e.ObjectOld.(*corev1.Secret)
+			newSecret, okNew := e.ObjectNew.(*corev1.Secret)
+			if !okOld || !okNew {
+				return false
+			}
+			for key, value := range oldSecret.Data {
+				if len(value) == 0 {
+					continue
+				}
+				if len(newSecret.Data[key]) == 0 {
+					return true
+				}
+			}
+			return false
+		},
+	}
 }

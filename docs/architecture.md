@@ -67,7 +67,8 @@ continuously.
   lifecycle: token acquisition, credential issuance, storage, and renewal. Uses
   the OID4VCI client library and the `CredentialStore` interface. Implements
   exponential backoff for transient errors and distinguishes between retriable
-  and permanent failures.
+  and permanent failures. Also watches the credential Secrets it owns, so one
+  deleted or emptied out-of-band is re-issued immediately (see ADR-8).
 
 ### Internal Libraries
 
@@ -317,6 +318,61 @@ header) instead of raw JWK binding.
 
 ---
 
+### ADR-8: Self-Healing of Credential Secrets
+
+**Status:** Accepted
+
+**Context:** The reconciler's fast path skipped any request whose `Ready`
+condition was `True` and whose `status.nextRenewalTime` was still in the future.
+That gate consulted only the status, never the storage backend, and the
+controller watched nothing but the `VerifiableCredentialRequest` itself. A
+credential Secret deleted out-of-band therefore stayed missing until the next
+scheduled renewal -- typically `exp - renewBefore`, so hours or days -- leaving
+the consuming service without a credential for that entire window.
+
+**Decision:** Watch the credential Secrets the controller owns, and make the
+renewal gate consult the `CredentialStore` before skipping. `Retrieve` now
+reports an absent credential as `credentialstore.ErrNotFound`, which the
+reconciler treats as "re-issue now" regardless of the renewal schedule.
+
+**Rationale:**
+- **`Owns` rather than `Watches`:** Credential Secrets already carried an owner
+  reference with `Controller: true`, so `Owns` maps Secret events back to the
+  owning request exactly, with no field index and no RBAC change (`watch` on
+  Secrets was already granted). The Secret informer was already running, because
+  both controllers read auth and holder-key Secrets through the cached client,
+  so the watch adds no cache cost.
+- **Filtering the operator's own writes:** `storeCredential` runs before the
+  status update, so an unfiltered watch would enqueue a redundant reconciliation
+  after every issuance, plus one per managed Secret on every informer resync. The
+  predicate admits only deletions and updates that removed or emptied a data key.
+- **A sentinel, not "any error means missing":** A successful reconciliation
+  resets the workqueue rate limiter, so treating every transient backend failure
+  as a missing credential would let a flaky backend drive an unthrottled
+  re-issuance storm against the issuer. Only `ErrNotFound` triggers re-issuance;
+  any other error is assumed to mean the credential is present.
+- **Drift comes for free:** Mapping the existing "Secret has no credential key"
+  branch onto the same sentinel means an emptied Secret self-heals exactly like a
+  deleted one, without a second lookup.
+- **The gate stays pure:** The lookup happens in `Reconcile` and its outcome is
+  passed into `skipIfNotDueForRenewal` as a boolean, keeping that helper a pure
+  function of status and clock.
+
+**Trade-offs:**
+- The operator keeps no copy of the credential, so a restore costs a full
+  issuer round-trip. Repeated deletion of a Secret produces one round-trip per
+  deletion with no debouncing.
+- The restored Secret has no `previousCredential`: the rotation buffer lived in
+  the deleted Secret, so consumers holding the old credential get no grace
+  period.
+- A restore reuses the renewal accounting path, so it increments
+  `status.renewalCount` and `vc_operator_credentials_renewed_total`. The
+  `StoredCredentialMissing` Warning event is what distinguishes a restore from a
+  scheduled renewal.
+- Every reconciliation performs one additional cached read of the target Secret.
+
+---
+
 ## Data Flow
 
 ### Credential Issuance Flow
@@ -335,6 +391,9 @@ header) instead of raw JWK binding.
    |
    v
 4. VCRequest Reconciler
+   |-- Checks whether the stored credential is still present
+   |   (absent => re-issue now, ignoring the renewal schedule)
+   |-- Skips if stored, valid and not yet due for renewal
    |-- Looks up referenced CredentialIssuer (must be Ready)
    |-- Reads client credentials from auth Secret
    |-- Calls OID4VCI Client:
@@ -349,7 +408,7 @@ header) instead of raw JWK binding.
    |-- Calculates nextRenewalTime = expiry - renewBefore
    |-- Requeues at nextRenewalTime
    |
-5. Renewal (triggered by requeue)
+5. Renewal (triggered by requeue, or by the Secret watch on credential loss)
    |-- Re-executes the full credential acquisition flow
    |-- Updates Secret with new credential (retains previous)
    |-- Increments renewalCount

@@ -62,25 +62,39 @@ type mockCredentialStore struct {
 	lastStored *credentialstore.CredentialData
 	// lastRef captures the last TargetRef passed to Store.
 	lastRef *credentialstore.TargetRef
+	// stored holds the credential currently in the mock backend. It backs the
+	// default Retrieve so that the mock behaves like a real store: what was
+	// successfully stored can be read back. Setting it to nil simulates the
+	// target Secret being deleted out-of-band.
+	stored *credentialstore.CredentialData
 }
 
-// Store delegates to the configured mock function or succeeds by default.
+// Store delegates to the configured mock function or succeeds by default. On
+// success the data is retained so that a subsequent Retrieve returns it.
 func (m *mockCredentialStore) Store(ctx context.Context, ref credentialstore.TargetRef, data *credentialstore.CredentialData) error {
 	m.storeCalls++
 	m.lastStored = data
 	m.lastRef = &ref
 	if m.storeFunc != nil {
-		return m.storeFunc(ctx, ref, data)
+		if err := m.storeFunc(ctx, ref, data); err != nil {
+			return err
+		}
 	}
+	m.stored = data
 	return nil
 }
 
-// Retrieve delegates to the configured mock function or returns not found.
+// Retrieve delegates to the configured mock function, or returns whatever was
+// last stored. An empty backend reports the sentinel the CredentialStore
+// contract requires.
 func (m *mockCredentialStore) Retrieve(ctx context.Context, ref credentialstore.TargetRef) (*credentialstore.CredentialData, error) {
 	if m.retrieveFunc != nil {
 		return m.retrieveFunc(ctx, ref)
 	}
-	return nil, fmt.Errorf("not found")
+	if m.stored == nil {
+		return nil, fmt.Errorf("mock store is empty: %w", credentialstore.ErrNotFound)
+	}
+	return m.stored, nil
 }
 
 // Delete delegates to the configured mock function or succeeds by default.
@@ -897,6 +911,131 @@ var _ = Describe("VerifiableCredentialRequest Controller", func() {
 
 			status = getVCRequestStatus(ctx)
 			Expect(status.RenewalCount).To(Equal(int32(2)))
+		})
+	})
+
+	Context("stored credential missing: self-healing re-issuance", func() {
+		var fakeClock *FakeClock
+		var testMetrics *VCRequestMetrics
+
+		BeforeEach(func() {
+			createReadyIssuer(ctx)
+			createAuthSecret(ctx)
+			createVCRequest(ctx)
+
+			fakeClock = &FakeClock{
+				CurrentTime: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			}
+			reconciler.Clock = fakeClock
+			setupHappyPathWithClock(fakeClock.CurrentTime, 1*time.Hour)
+
+			testMetrics = NewVCRequestMetrics()
+			reconciler.Metrics = testMetrics
+		})
+
+		AfterEach(func() {
+			deleteResource(ctx, &vcv1alpha1.VerifiableCredentialRequest{}, vcReqName)
+			deleteResource(ctx, &vcv1alpha1.CredentialIssuer{}, issuerName)
+			deleteResource(ctx, &corev1.Secret{}, authSecretName)
+		})
+
+		// reconcileOnce runs a single reconciliation and asserts it succeeded.
+		reconcileOnce := func() ctrl.Result {
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return result
+		}
+
+		It("should skip reconciliation while the stored credential is present", func() {
+			reconcileOnce()
+			Expect(mockStore.storeCalls).To(Equal(1))
+
+			// The clock is deliberately not advanced: renewal is ~55 minutes
+			// away, so a present credential must short-circuit the reconcile.
+			result := reconcileOnce()
+			Expect(mockStore.storeCalls).To(Equal(1))
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+		})
+
+		It("should re-issue when the stored credential is gone", func() {
+			reconcileOnce()
+			Expect(mockStore.storeCalls).To(Equal(1))
+
+			// Simulate the target Secret being deleted out-of-band.
+			mockStore.stored = nil
+
+			reconcileOnce()
+			Expect(mockStore.storeCalls).To(Equal(2))
+		})
+
+		It("should re-issue when the stored credential is empty", func() {
+			reconcileOnce()
+			Expect(mockStore.storeCalls).To(Equal(1))
+
+			// Simulate the credential key being emptied out-of-band.
+			mockStore.stored = &credentialstore.CredentialData{Credential: nil}
+
+			reconcileOnce()
+			Expect(mockStore.storeCalls).To(Equal(2))
+		})
+
+		It("should keep skipping when the store returns a transient error", func() {
+			reconcileOnce()
+			Expect(mockStore.storeCalls).To(Equal(1))
+
+			// A backend failure must not be mistaken for a missing credential:
+			// a successful reconcile resets the workqueue rate limiter, so
+			// re-issuing here would let a flaky backend hammer the issuer.
+			mockStore.retrieveFunc = func(_ context.Context, _ credentialstore.TargetRef) (*credentialstore.CredentialData, error) {
+				return nil, fmt.Errorf("apiserver unavailable")
+			}
+
+			reconcileOnce()
+			Expect(mockStore.storeCalls).To(Equal(1))
+		})
+
+		It("should emit a warning event when the stored credential is missing", func() {
+			reconcileOnce()
+
+			// Drain the initial issuance event.
+			var event string
+			Expect(eventRecorder.Events).Should(Receive(&event))
+
+			mockStore.stored = nil
+			reconcileOnce()
+
+			Expect(eventRecorder.Events).Should(Receive(&event))
+			Expect(event).To(ContainSubstring(vcv1alpha1.ReasonStoredCredentialMissing))
+		})
+
+		It("should not emit a missing-credential event on the initial issuance", func() {
+			reconcileOnce()
+
+			var event string
+			Expect(eventRecorder.Events).Should(Receive(&event))
+			Expect(event).NotTo(ContainSubstring(vcv1alpha1.ReasonStoredCredentialMissing))
+		})
+
+		It("should count the restore as a renewal", func() {
+			reconcileOnce()
+
+			status := getVCRequestStatus(ctx)
+			Expect(status.RenewalCount).To(Equal(int32(0)))
+			Expect(status.LastRenewalTime).To(BeNil())
+
+			mockStore.stored = nil
+			reconcileOnce()
+
+			// A restore reuses the renewal accounting path by design: it is
+			// recorded as a renewal in both the status and the metrics.
+			status = getVCRequestStatus(ctx)
+			Expect(status.RenewalCount).To(Equal(int32(1)))
+			Expect(status.LastRenewalTime).NotTo(BeNil())
+
+			renewed := getCounterValue(testMetrics.CredentialsRenewedTotal, vcReqNs, vcReqName, credType)
+			Expect(renewed).To(Equal(float64(1)))
 		})
 	})
 

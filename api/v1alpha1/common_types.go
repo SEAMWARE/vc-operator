@@ -91,6 +91,12 @@ const (
 	// Secret is missing, contains invalid key data, or holderDID is set
 	// without holderKeyRef.
 	ReasonHolderKeyInvalid = "HolderKeyInvalid"
+
+	// ReasonStoredCredentialMissing indicates that a previously issued
+	// credential is no longer present in the storage backend (for example,
+	// the target Secret was deleted or emptied out-of-band), which triggers
+	// an immediate re-issuance.
+	ReasonStoredCredentialMissing = "StoredCredentialMissing"
 )
 
 // SecretReference is a reference to a Kubernetes Secret in the same namespace.
