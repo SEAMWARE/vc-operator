@@ -92,6 +92,45 @@ type VerifiableCredentialRequestSpec struct {
 	// Requires HolderKeyRef to be set.
 	// +optional
 	HolderDID string `json:"holderDID,omitempty"`
+
+	// IdentityHub optionally publishes every issued and renewed credential
+	// into an EDC IdentityHub's own credential store, in addition to storing
+	// it in the target backend.
+	//
+	// This is not an alternative to TargetSecretRef: services read the
+	// credential from the stored copy while the IdentityHub keeps its own, and
+	// the two have to stay in step. Without this, a renewal updates the stored
+	// copy while the IdentityHub goes on serving the expired one, and every DCP
+	// exchange starts failing without anything having been deployed.
+	// +optional
+	IdentityHub *IdentityHubTarget `json:"identityHub,omitempty"`
+}
+
+// IdentityHubTarget describes an EDC IdentityHub to publish the credential to.
+type IdentityHubTarget struct {
+	// URL is the base URL of the IdentityHub Identity API, including the
+	// version segment, e.g.
+	// "http://identityhub-service:8082/api/identity/v1alpha".
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https?://`
+	URL string `json:"url"`
+
+	// ParticipantID is the participant context the credential belongs to, i.e.
+	// the participant's DID. The operator base64url-encodes it into the
+	// request path, which is what the Identity API expects there.
+	// +kubebuilder:validation:MinLength=1
+	ParticipantID string `json:"participantId"`
+
+	// APIKeyRef references a Secret holding the IdentityHub API key. The value
+	// must already be in the composed form the IdentityHub expects,
+	// base64(participantContextId).secret.
+	APIKeyRef SecretKeyReference `json:"apiKeyRef"`
+
+	// CredentialID is the id the credential is stored under in the
+	// IdentityHub. A renewal replaces the entry with this id, so it has to be
+	// stable. Defaults to the name of the VerifiableCredentialRequest.
+	// +optional
+	CredentialID string `json:"credentialId,omitempty"`
 }
 
 // VerifiableCredentialRequestStatus defines the observed state of a

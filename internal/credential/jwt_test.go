@@ -330,3 +330,52 @@ func TestExtractTimeClaim_EdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractVCClaim(t *testing.T) {
+	vc := map[string]any{
+		"type":              []any{"VerifiableCredential", "MembershipCredential"},
+		"issuer":            "did:web:example.org",
+		"credentialSubject": map[string]any{"id": "did:web:example.org"},
+	}
+	jwt := buildJWT(map[string]any{"alg": "ES256", "kid": "did:web:example.org#key-1"},
+		map[string]any{"iss": "did:web:example.org", "exp": 1893456000, "vc": vc})
+
+	got, err := ExtractVCClaim(jwt)
+	if err != nil {
+		t.Fatalf("ExtractVCClaim() returned %v", err)
+	}
+
+	// The result has to be the credential object itself, not the enclosing JWT
+	// claims: a credential store indexes the object.
+	var decoded map[string]any
+	if err := json.Unmarshal(got, &decoded); err != nil {
+		t.Fatalf("the extracted claim is not valid JSON: %v", err)
+	}
+	if _, unexpected := decoded["iss"]; unexpected {
+		t.Errorf("extracted the JWT claims instead of the vc object: %s", got)
+	}
+	if decoded["issuer"] != "did:web:example.org" {
+		t.Errorf("issuer = %v, want did:web:example.org", decoded["issuer"])
+	}
+	types, ok := decoded["type"].([]any)
+	if !ok || len(types) != 2 {
+		t.Errorf("type = %v, want the two-element array", decoded["type"])
+	}
+}
+
+func TestExtractVCClaimErrors(t *testing.T) {
+	tests := map[string]string{
+		"not a jwt":        "only-two.segments",
+		"no vc claim":      buildJWT(map[string]any{"alg": "ES256"}, map[string]any{"iss": "did:web:example.org"}),
+		"bad base64":       "aaa.!!!not-base64!!!.sig",
+		"empty":            "",
+		"payload not json": "aaa." + base64.RawURLEncoding.EncodeToString([]byte("not json")) + ".sig",
+	}
+	for name, jwt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ExtractVCClaim(jwt); err == nil {
+				t.Error("ExtractVCClaim() returned nil, want an error")
+			}
+		})
+	}
+}

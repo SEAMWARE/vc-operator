@@ -47,6 +47,10 @@ const (
 
 	// ClaimIat is the JWT "iat" (Issued At) claim name.
 	ClaimIat = "iat"
+
+	// ClaimVC is the JWT claim holding the Verifiable Credential object of a
+	// jwt_vc_json credential.
+	ClaimVC = "vc"
 )
 
 // Credential lifecycle constants.

@@ -151,3 +151,35 @@ func extractTimeClaim(claims map[string]any, key string) time.Time {
 		return time.Time{}
 	}
 }
+
+// ExtractVCClaim returns the "vc" claim of a JWT Verifiable Credential as raw
+// JSON, i.e. the credential object itself rather than the enclosing JWT.
+//
+// Consumers that store a credential alongside its compact form need both: the
+// raw JWT carries the signature, while the decoded object is what a credential
+// store indexes and evaluates. As with ParseJWTCredential, the signature is not
+// verified here.
+func ExtractVCClaim(rawJWT string) (json.RawMessage, error) {
+	rawJWT = strings.TrimSpace(rawJWT)
+	segments := strings.Split(rawJWT, ".")
+	if len(segments) != JWTSegmentCount {
+		return nil, fmt.Errorf("invalid JWT: expected %d segments, got %d", JWTSegmentCount, len(segments))
+	}
+
+	payload, err := decodeJWTSegment(segments[JWTPayloadSegment])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode JWT payload: %w", err)
+	}
+
+	vc, ok := payload[ClaimVC]
+	if !ok {
+		return nil, fmt.Errorf("JWT payload has no %q claim", ClaimVC)
+	}
+
+	encoded, err := json.Marshal(vc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-encode the %q claim: %w", ClaimVC, err)
+	}
+
+	return encoded, nil
+}

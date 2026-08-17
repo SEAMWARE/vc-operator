@@ -20,8 +20,10 @@ package controller
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -41,6 +43,7 @@ import (
 	vcv1alpha1 "github.com/wistefan/vc-operator/api/v1alpha1"
 	"github.com/wistefan/vc-operator/internal/credential"
 	"github.com/wistefan/vc-operator/internal/credentialstore"
+	"github.com/wistefan/vc-operator/internal/identityhub"
 	"github.com/wistefan/vc-operator/internal/oid4vci"
 )
 
@@ -95,6 +98,14 @@ const (
 	HolderKeySecretKeyTLS = "tls.key"
 )
 
+// IdentityHubPublisher publishes an issued credential into the credential store
+// of an EDC IdentityHub. Kept as an interface so the reconciler can be tested
+// without an IdentityHub, and so an alternative credential store can be plugged
+// in later.
+type IdentityHubPublisher interface {
+	Publish(ctx context.Context, target identityhub.Target, rawVC string, vc json.RawMessage) error
+}
+
 // VerifiableCredentialRequestReconciler reconciles VerifiableCredentialRequest
 // resources. It obtains Verifiable Credentials from OID4VCI issuers, stores
 // them via the pluggable CredentialStore interface, and schedules automatic
@@ -105,6 +116,13 @@ type VerifiableCredentialRequestReconciler struct {
 	OID4VCIClient   oid4vci.Client
 	CredentialStore credentialstore.CredentialStore
 	EventRecorder   events.EventRecorder
+
+	// IdentityHubPublisher publishes the credential into an EDC IdentityHub
+	// credential store for requests that declare spec.identityHub. Optional:
+	// when nil, such a request fails rather than silently skipping the step,
+	// since a missing IdentityHub copy is exactly the failure this feature
+	// exists to prevent.
+	IdentityHubPublisher IdentityHubPublisher
 
 	// Clock provides an abstraction over time.Now() for testability.
 	// If nil, RealClock is used. In tests, set to a FakeClock to
@@ -332,7 +350,17 @@ func (r *VerifiableCredentialRequestReconciler) Reconcile(ctx context.Context, r
 		return r.handleStorageError(ctx, &vcReq, err)
 	}
 
-	// Step 9: Update status with issuance/renewal timestamps and conditions.
+	// Step 9: Publish the credential into the IdentityHub, when one is declared.
+	// Deliberately after the store and before the success status: the stored copy
+	// is what services read, and a request that asks for an IdentityHub copy is
+	// not Ready until that copy is in place.
+	if vcReq.Spec.IdentityHub != nil {
+		if err := r.publishToIdentityHub(ctx, &vcReq, credStr); err != nil {
+			return r.handleIdentityHubError(ctx, &vcReq, err)
+		}
+	}
+
+	// Step 10: Update status with issuance/renewal timestamps and conditions.
 	return r.handleSuccess(ctx, &vcReq, parsed, credResp.Format, renewalInfo, now)
 }
 
@@ -492,6 +520,89 @@ func (r *VerifiableCredentialRequestReconciler) storeCredential(
 	}
 
 	return r.CredentialStore.Store(ctx, targetRef, credData)
+}
+
+// publishToIdentityHub pushes the credential into the IdentityHub credential
+// store declared by the request.
+func (r *VerifiableCredentialRequestReconciler) publishToIdentityHub(
+	ctx context.Context,
+	vcReq *vcv1alpha1.VerifiableCredentialRequest,
+	credStr string,
+) error {
+	target := vcReq.Spec.IdentityHub
+	if r.IdentityHubPublisher == nil {
+		return fmt.Errorf("spec.identityHub is set but no IdentityHub publisher is configured")
+	}
+
+	apiKey, err := r.resolveSecretKey(ctx, vcReq.Namespace, target.APIKeyRef)
+	if err != nil {
+		return err
+	}
+
+	// The IdentityHub stores the credential object alongside its compact form:
+	// the raw JWT carries the signature, the decoded object is what the store
+	// indexes.
+	vc, err := credential.ExtractVCClaim(credStr)
+	if err != nil {
+		return fmt.Errorf("failed to extract the credential object: %w", err)
+	}
+
+	credentialID := target.CredentialID
+	if credentialID == "" {
+		credentialID = vcReq.Name
+	}
+
+	return r.IdentityHubPublisher.Publish(ctx, identityhub.Target{
+		BaseURL:       target.URL,
+		ParticipantID: target.ParticipantID,
+		CredentialID:  credentialID,
+		APIKey:        apiKey,
+	}, credStr, vc)
+}
+
+// resolveSecretKey reads a single key out of a Secret in the given namespace.
+func (r *VerifiableCredentialRequestReconciler) resolveSecretKey(
+	ctx context.Context,
+	namespace string,
+	ref vcv1alpha1.SecretKeyReference,
+) (string, error) {
+	var secret corev1.Secret
+	key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
+	if err := r.Get(ctx, key, &secret); err != nil {
+		return "", fmt.Errorf("failed to read secret %s: %w", key, err)
+	}
+
+	value, ok := secret.Data[ref.Key]
+	if !ok {
+		return "", fmt.Errorf("secret %s has no key %q", key, ref.Key)
+	}
+	if len(value) == 0 {
+		return "", fmt.Errorf("secret %s key %q is empty", key, ref.Key)
+	}
+
+	return strings.TrimSpace(string(value)), nil
+}
+
+// handleIdentityHubError handles a failure to publish into the IdentityHub.
+// Returns the error so the request is retried with backoff: the credential is
+// stored but the IdentityHub still serves the previous one, which is the state
+// that breaks DCP exchanges, so it must not be reported as success.
+func (r *VerifiableCredentialRequestReconciler) handleIdentityHubError(
+	ctx context.Context,
+	vcReq *vcv1alpha1.VerifiableCredentialRequest,
+	err error,
+) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	msg := fmt.Sprintf("Failed to publish credential to the identityhub: %v", err)
+	log.Error(err, "IdentityHub publication failed")
+	r.EventRecorder.Eventf(vcReq, nil, corev1.EventTypeWarning, vcv1alpha1.ReasonIdentityHubPublishFailed, ActionStoreCredential, msg)
+	r.recordErrorMetric(vcReq, vcv1alpha1.ReasonIdentityHubPublishFailed)
+
+	if statusErr := r.setVCRequestErrorStatus(ctx, vcReq, vcv1alpha1.ReasonIdentityHubPublishFailed, msg); statusErr != nil {
+		return ctrl.Result{}, statusErr
+	}
+	return ctrl.Result{}, err
 }
 
 // handleIssuerError handles errors related to the referenced CredentialIssuer
@@ -677,6 +788,19 @@ func (r *VerifiableCredentialRequestReconciler) handleSuccess(
 		Message:            "Credential is stored and valid",
 		ObservedGeneration: vcReq.Generation,
 	})
+
+	// Set IdentityHubPublished=True when a copy was published. Only set when the
+	// request asks for one: an absent condition means "not requested", which is
+	// different from "requested and failed" - that path never reaches here.
+	if vcReq.Spec.IdentityHub != nil {
+		meta.SetStatusCondition(&vcReq.Status.Conditions, metav1.Condition{
+			Type:               vcv1alpha1.ConditionTypeIdentityHubPublished,
+			Status:             metav1.ConditionTrue,
+			Reason:             vcv1alpha1.ReasonIdentityHubPublished,
+			Message:            fmt.Sprintf("Credential published to the identityhub at %s", vcReq.Spec.IdentityHub.URL),
+			ObservedGeneration: vcReq.Generation,
+		})
+	}
 
 	// Set RenewalScheduled=True condition.
 	meta.SetStatusCondition(&vcReq.Status.Conditions, metav1.Condition{

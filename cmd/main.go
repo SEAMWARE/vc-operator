@@ -42,6 +42,7 @@ import (
 	vcv1alpha1 "github.com/wistefan/vc-operator/api/v1alpha1"
 	"github.com/wistefan/vc-operator/internal/controller"
 	kubestore "github.com/wistefan/vc-operator/internal/credentialstore/kubernetes"
+	"github.com/wistefan/vc-operator/internal/identityhub"
 	"github.com/wistefan/vc-operator/internal/oid4vci"
 	// +kubebuilder:scaffold:imports
 )
@@ -225,6 +226,7 @@ func main() {
 		Scheme:                     mgr.GetScheme(),
 		OID4VCIClient:              oid4vci.NewClient(),
 		CredentialStore:            kubestore.NewSecretStore(mgr.GetClient()),
+		IdentityHubPublisher:       identityhub.NewClient(),
 		EventRecorder:              mgr.GetEventRecorder("vcrequest-controller"),
 		Clock:                      controller.RealClock{},
 		Metrics:                    vcRequestMetrics,

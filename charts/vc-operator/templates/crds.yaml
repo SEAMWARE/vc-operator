@@ -342,6 +342,62 @@ spec:
                 required:
                 - name
                 type: object
+              identityHub:
+                description: |-
+                  IdentityHub optionally publishes every issued and renewed credential
+                  into an EDC IdentityHub's own credential store, in addition to storing
+                  it in the target backend.
+
+                  This is not an alternative to TargetSecretRef: services read the
+                  credential from the stored copy while the IdentityHub keeps its own, and
+                  the two have to stay in step. Without this, a renewal updates the stored
+                  copy while the IdentityHub goes on serving the expired one, and every DCP
+                  exchange starts failing without anything having been deployed.
+                properties:
+                  apiKeyRef:
+                    description: |-
+                      APIKeyRef references a Secret holding the IdentityHub API key. The value
+                      must already be in the composed form the IdentityHub expects,
+                      base64(participantContextId).secret.
+                    properties:
+                      key:
+                        description: Key is the data key within the Secret.
+                        minLength: 1
+                        type: string
+                      name:
+                        description: Name is the name of the Secret.
+                        minLength: 1
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  credentialId:
+                    description: |-
+                      CredentialID is the id the credential is stored under in the
+                      IdentityHub. A renewal replaces the entry with this id, so it has to be
+                      stable. Defaults to the name of the VerifiableCredentialRequest.
+                    type: string
+                  participantId:
+                    description: |-
+                      ParticipantID is the participant context the credential belongs to, i.e.
+                      the participant's DID. The operator base64url-encodes it into the
+                      request path, which is what the Identity API expects there.
+                    minLength: 1
+                    type: string
+                  url:
+                    description: |-
+                      URL is the base URL of the IdentityHub Identity API, including the
+                      version segment, e.g.
+                      "http://identityhub-service:8082/api/identity/v1alpha".
+                    minLength: 1
+                    pattern: ^https?://
+                    type: string
+                required:
+                - apiKeyRef
+                - participantId
+                - url
+                type: object
               issuerRef:
                 description: |-
                   IssuerRef references a CredentialIssuer resource in the same namespace.
