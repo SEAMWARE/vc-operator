@@ -88,19 +88,18 @@ func TestPublishPostsTheContainerToTheParticipantPath(t *testing.T) {
 
 // A 409 is the normal outcome of a renewal: the stored copy is the one about to
 // expire, and it has to be replaced rather than left in place.
-func TestPublishReplacesAnExistingCredentialOnConflict(t *testing.T) {
+// The replacement must never go through a delete: that would leave the
+// IdentityHub holding no credential at all if the repost failed.
+func TestPublishReplacesAnExistingCredentialInPlaceOnConflict(t *testing.T) {
 	var calls []string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
-		switch {
-		case r.Method == http.MethodPost && len(calls) == 1:
+		if r.Method == http.MethodPost && len(calls) == 1 {
 			w.WriteHeader(http.StatusConflict)
-		case r.Method == http.MethodDelete:
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			w.WriteHeader(http.StatusNoContent)
+			return
 		}
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
@@ -110,8 +109,7 @@ func TestPublishReplacesAnExistingCredentialOnConflict(t *testing.T) {
 
 	want := []string{
 		"POST /participants/" + testDIDPath + "/credentials",
-		"DELETE /participants/" + testDIDPath + "/credentials/membership-credential",
-		"POST /participants/" + testDIDPath + "/credentials",
+		"PUT /participants/" + testDIDPath + "/credentials",
 	}
 	if len(calls) != len(want) {
 		t.Fatalf("calls = %v, want %v", calls, want)
@@ -120,6 +118,81 @@ func TestPublishReplacesAnExistingCredentialOnConflict(t *testing.T) {
 		if calls[i] != want[i] {
 			t.Errorf("call %d = %q, want %q", i, calls[i], want[i])
 		}
+	}
+}
+
+// Older IdentityHub builds expose only POST on the credentials collection.
+func TestPublishFallsBackToDeleteAndPostWhenPutIsUnsupported(t *testing.T) {
+	for name, putStatus := range map[string]int{
+		"method not allowed": http.StatusMethodNotAllowed,
+		"route absent":       http.StatusNotFound,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.Method+" "+r.URL.Path)
+				switch {
+				case r.Method == http.MethodPost && len(calls) == 1:
+					w.WriteHeader(http.StatusConflict)
+				case r.Method == http.MethodPut:
+					w.WriteHeader(putStatus)
+				default:
+					w.WriteHeader(http.StatusNoContent)
+				}
+			}))
+			defer server.Close()
+
+			if err := NewClient().Publish(context.Background(), testTarget(server.URL), testRawVC, json.RawMessage(`{}`)); err != nil {
+				t.Fatalf("Publish() returned %v", err)
+			}
+
+			want := []string{
+				"POST /participants/" + testDIDPath + "/credentials",
+				"PUT /participants/" + testDIDPath + "/credentials",
+				"DELETE /participants/" + testDIDPath + "/credentials/membership-credential",
+				"POST /participants/" + testDIDPath + "/credentials",
+			}
+			if len(calls) != len(want) {
+				t.Fatalf("calls = %v, want %v", calls, want)
+			}
+			for i := range want {
+				if calls[i] != want[i] {
+					t.Errorf("call %d = %q, want %q", i, calls[i], want[i])
+				}
+			}
+		})
+	}
+}
+
+// On the legacy fallback the delete has already happened, so a failing repost
+// leaves the IdentityHub with nothing. It must surface as an error, because the
+// controller retrying the publication is what closes that window.
+func TestPublishReportsAFailedRepostAfterTheDelete(t *testing.T) {
+	posts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			posts++
+			if posts == 1 {
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("identityhub restarting"))
+		case http.MethodPut:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	err := NewClient().Publish(context.Background(), testTarget(server.URL), testRawVC, json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("Publish() returned nil, want the repost failure")
+	}
+	if !strings.Contains(err.Error(), "503") {
+		t.Errorf("error = %q, want it to carry the repost status", err)
 	}
 }
 
@@ -136,6 +209,8 @@ func TestPublishToleratesANotFoundOnDelete(t *testing.T) {
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
+		case http.MethodPut:
+			w.WriteHeader(http.StatusMethodNotAllowed)
 		case http.MethodDelete:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -168,11 +243,14 @@ func TestPublishReportsTheStatusAndBodyOnFailure(t *testing.T) {
 
 func TestPublishFailsWhenTheDeleteFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
 			w.WriteHeader(http.StatusConflict)
-			return
+		case http.MethodPut:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
 		}
-		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
 

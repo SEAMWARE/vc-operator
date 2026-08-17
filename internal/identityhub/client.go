@@ -111,9 +111,17 @@ func NewClientWithHTTPClient(httpClient *http.Client) *Client {
 // id.
 //
 // The credentials endpoint answers 409 when the id exists rather than
-// overwriting, so the existing entry is deleted and the credential posted
-// again. That path is the normal one on a renewal, and it is the whole point of
-// publishing: the copy being replaced is the one about to expire.
+// overwriting, which is the normal path on a renewal: the copy being replaced is
+// the one about to expire. The replacement is then a PUT on the collection,
+// which swaps the stored credential in place, so the IdentityHub keeps serving
+// something for the whole operation.
+//
+// Older IdentityHub builds only expose POST on this route and answer the PUT
+// with 404 or 405. Those fall back to deleting the entry and posting again,
+// which is not atomic: if the second POST fails, the IdentityHub is left with no
+// credential at all for that participant, and a DCP exchange then has nothing to
+// present rather than something stale. The controller retries the publication
+// until it succeeds, but the gap is real while it lasts.
 func (c *Client) Publish(ctx context.Context, target Target, rawVC string, vc json.RawMessage) error {
 	if err := target.validate(); err != nil {
 		return err
@@ -138,20 +146,39 @@ func (c *Client) Publish(ctx context.Context, target Target, rawVC string, vc js
 	if err != nil {
 		return err
 	}
+
 	if status == http.StatusConflict {
-		if err := c.delete(ctx, target); err != nil {
-			return err
-		}
-		status, respBody, err = c.do(ctx, http.MethodPost, endpoint, target.APIKey, body)
+		status, respBody, err = c.replace(ctx, target, endpoint, body)
 		if err != nil {
 			return err
 		}
 	}
+
 	if !isSuccess(status) {
 		return fmt.Errorf("publishing credential %q returned HTTP %d: %s", target.CredentialID, status, truncate(respBody))
 	}
 
 	return nil
+}
+
+// replace swaps an already-stored credential for a new one, preferring the
+// in-place PUT and falling back to delete-then-post where PUT is unavailable.
+func (c *Client) replace(ctx context.Context, target Target, endpoint string, body []byte) (int, []byte, error) {
+	status, respBody, err := c.do(ctx, http.MethodPut, endpoint, target.APIKey, body)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	// The entry exists — the POST just said so with a 409 — so a 404 here is the
+	// route being absent, not the credential, same as an explicit 405.
+	if status != http.StatusNotFound && status != http.StatusMethodNotAllowed {
+		return status, respBody, nil
+	}
+
+	if err := c.delete(ctx, target); err != nil {
+		return 0, nil, err
+	}
+	return c.do(ctx, http.MethodPost, endpoint, target.APIKey, body)
 }
 
 // delete removes the stored credential. A 404 is not an error: the goal is that

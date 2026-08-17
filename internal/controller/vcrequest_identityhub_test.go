@@ -21,17 +21,24 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	vcv1alpha1 "github.com/wistefan/vc-operator/api/v1alpha1"
+	"github.com/wistefan/vc-operator/internal/credentialstore"
 	"github.com/wistefan/vc-operator/internal/identityhub"
 )
 
@@ -224,5 +231,246 @@ func TestPublishToIdentityHubFailsOnACredentialWithoutAVCClaim(t *testing.T) {
 	}
 	if publisher.calls != 0 {
 		t.Error("published a credential whose object could not be extracted")
+	}
+}
+
+// storedOnlyCredentialStore serves a credential that is already stored and
+// records whether anything tried to write a new one.
+type storedOnlyCredentialStore struct {
+	stored     []byte
+	storeCalls int
+}
+
+func (s *storedOnlyCredentialStore) Store(_ context.Context, _ credentialstore.TargetRef, data *credentialstore.CredentialData) error {
+	s.storeCalls++
+	s.stored = data.Credential
+	return nil
+}
+
+func (s *storedOnlyCredentialStore) Retrieve(_ context.Context, _ credentialstore.TargetRef) (*credentialstore.CredentialData, error) {
+	if len(s.stored) == 0 {
+		return nil, credentialstore.ErrNotFound
+	}
+	return &credentialstore.CredentialData{Credential: s.stored, Format: "jwt_vc_json"}, nil
+}
+
+func (s *storedOnlyCredentialStore) Delete(_ context.Context, _ credentialstore.TargetRef) error {
+	return nil
+}
+
+// publishFailedRequest builds a request left in the state a failed publication
+// produces: the credential was obtained and stored, the IdentityHub copy was
+// not, and renewal is still far away.
+func publishFailedRequest(clock *FakeClock) *vcv1alpha1.VerifiableCredentialRequest {
+	vcReq := vcRequestWithIdentityHub(&vcv1alpha1.IdentityHubTarget{
+		URL:           "http://identityhub-service:8082/api/identity/v1alpha",
+		ParticipantID: "did:web:example.org",
+		APIKeyRef:     vcv1alpha1.SecretKeyReference{Name: "identityhub-secret", Key: "superuser"},
+		CredentialID:  "membership-credential",
+	})
+	vcReq.Generation = 1
+
+	issuedAt := metav1.NewTime(clock.Now())
+	renewal := metav1.NewTime(clock.Now().Add(1 * time.Hour))
+	vcReq.Status.LastIssuanceTime = &issuedAt
+	vcReq.Status.NextRenewalTime = &renewal
+	vcReq.Status.Conditions = []metav1.Condition{
+		{
+			Type:               vcv1alpha1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             vcv1alpha1.ReasonIdentityHubPublishFailed,
+			Message:            "Failed to publish credential to the identityhub",
+			ObservedGeneration: 1,
+			LastTransitionTime: issuedAt,
+		},
+	}
+	return vcReq
+}
+
+func TestNeedsIdentityHubPublishOnly(t *testing.T) {
+	clock := &FakeClock{CurrentTime: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+	r := &VerifiableCredentialRequestReconciler{Clock: clock}
+
+	tests := []struct {
+		name              string
+		mutate            func(*vcv1alpha1.VerifiableCredentialRequest)
+		credentialMissing bool
+		want              bool
+	}{
+		{
+			name: "publication is the only outstanding step",
+			want: true,
+		},
+		{
+			name:              "credential is gone, so it has to be re-issued",
+			credentialMissing: true,
+			want:              false,
+		},
+		{
+			name: "no identityhub requested",
+			mutate: func(v *vcv1alpha1.VerifiableCredentialRequest) {
+				v.Spec.IdentityHub = nil
+			},
+			want: false,
+		},
+		{
+			name: "the failure was not the publication step",
+			mutate: func(v *vcv1alpha1.VerifiableCredentialRequest) {
+				v.Status.Conditions[0].Reason = vcv1alpha1.ReasonCredentialRequestFailed
+			},
+			want: false,
+		},
+		{
+			name: "spec changed since the failure, so re-run the whole pipeline",
+			mutate: func(v *vcv1alpha1.VerifiableCredentialRequest) {
+				v.Generation = 2
+			},
+			want: false,
+		},
+		{
+			name: "renewal is already due, so re-issue and republish",
+			mutate: func(v *vcv1alpha1.VerifiableCredentialRequest) {
+				past := metav1.NewTime(clock.Now().Add(-1 * time.Minute))
+				v.Status.NextRenewalTime = &past
+			},
+			want: false,
+		},
+		{
+			name: "no renewal scheduled means nothing is known about what is stored",
+			mutate: func(v *vcv1alpha1.VerifiableCredentialRequest) {
+				v.Status.NextRenewalTime = nil
+			},
+			want: false,
+		},
+		{
+			name: "a healthy request needs nothing",
+			mutate: func(v *vcv1alpha1.VerifiableCredentialRequest) {
+				v.Status.Conditions[0].Status = metav1.ConditionTrue
+				v.Status.Conditions[0].Reason = vcv1alpha1.ReasonCredentialObtained
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vcReq := publishFailedRequest(clock)
+			if tt.mutate != nil {
+				tt.mutate(vcReq)
+			}
+			if got := r.needsIdentityHubPublishOnly(vcReq, tt.credentialMissing); got != tt.want {
+				t.Errorf("needsIdentityHubPublishOnly() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// The point of the publish-only path: a transient IdentityHub outage must not
+// make the operator mint a brand-new credential from the issuer on every retry.
+func TestReconcileRetriesOnlyThePublicationAfterAPublishFailure(t *testing.T) {
+	clock := &FakeClock{CurrentTime: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+	vcReq := publishFailedRequest(clock)
+	credStr := buildTestCredential()
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = vcv1alpha1.AddToScheme(scheme)
+
+	store := &storedOnlyCredentialStore{stored: []byte(credStr)}
+	publisher := &recordingPublisher{}
+	r := &VerifiableCredentialRequestReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(apiKeySecret(), vcReq).
+			WithStatusSubresource(&vcv1alpha1.VerifiableCredentialRequest{}).
+			Build(),
+		Scheme:          scheme,
+		CredentialStore: store,
+		// Every method of this mock errors when unconfigured, so any fall-through
+		// to the issuance pipeline fails the reconciliation below.
+		OID4VCIClient:        &mockOID4VCIClient{},
+		IdentityHubPublisher: publisher,
+		EventRecorder:        events.NewFakeRecorder(fakeEventBufferSize),
+		Clock:                clock,
+	}
+
+	key := types.NamespacedName{Name: vcReq.Name, Namespace: vcReq.Namespace}
+	result, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+	if err != nil {
+		t.Fatalf("Reconcile() returned %v; it must not have gone back to the issuer", err)
+	}
+
+	if publisher.calls != 1 {
+		t.Errorf("publisher called %d times, want 1", publisher.calls)
+	}
+	if publisher.rawVC != credStr {
+		t.Errorf("republished %q, want the already-stored credential", publisher.rawVC)
+	}
+	if store.storeCalls != 0 {
+		t.Errorf("Store called %d times, want 0: the stored credential is still valid and its "+
+			"rotation buffer must not be overwritten", store.storeCalls)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Errorf("RequeueAfter = %v, want the remaining time until renewal", result.RequeueAfter)
+	}
+
+	var updated vcv1alpha1.VerifiableCredentialRequest
+	if err := r.Get(context.Background(), key, &updated); err != nil {
+		t.Fatalf("failed to read back the request: %v", err)
+	}
+	if c := meta.FindStatusCondition(updated.Status.Conditions, vcv1alpha1.ConditionTypeReady); c == nil || c.Status != metav1.ConditionTrue {
+		t.Errorf("Ready = %v, want True once the copy is in place", c)
+	}
+	if c := meta.FindStatusCondition(updated.Status.Conditions, vcv1alpha1.ConditionTypeIdentityHubPublished); c == nil || c.Status != metav1.ConditionTrue {
+		t.Errorf("IdentityHubPublished = %v, want True", c)
+	}
+	// Republishing is not a new issuance.
+	if updated.Status.RenewalCount != 0 {
+		t.Errorf("RenewalCount = %d, want 0", updated.Status.RenewalCount)
+	}
+}
+
+// A failed publication must not leave IdentityHubPublished claiming the copy is
+// in place, otherwise the condition reports a credential the hub does not hold.
+func TestIdentityHubPublishFailureMarksTheCopyOutOfSync(t *testing.T) {
+	clock := &FakeClock{CurrentTime: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+	vcReq := publishFailedRequest(clock)
+	// Start from the state left by a previous, successful publication.
+	meta.SetStatusCondition(&vcReq.Status.Conditions, metav1.Condition{
+		Type:               vcv1alpha1.ConditionTypeIdentityHubPublished,
+		Status:             metav1.ConditionTrue,
+		Reason:             vcv1alpha1.ReasonIdentityHubPublished,
+		Message:            "Credential published",
+		ObservedGeneration: 1,
+	})
+
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = vcv1alpha1.AddToScheme(scheme)
+
+	r := &VerifiableCredentialRequestReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(apiKeySecret(), vcReq).
+			WithStatusSubresource(&vcv1alpha1.VerifiableCredentialRequest{}).
+			Build(),
+		Scheme:               scheme,
+		CredentialStore:      &storedOnlyCredentialStore{stored: []byte(buildTestCredential())},
+		OID4VCIClient:        &mockOID4VCIClient{},
+		IdentityHubPublisher: &recordingPublisher{err: errors.New("identityhub unreachable")},
+		EventRecorder:        events.NewFakeRecorder(fakeEventBufferSize),
+		Clock:                clock,
+	}
+
+	key := types.NamespacedName{Name: vcReq.Name, Namespace: vcReq.Namespace}
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: key}); err == nil {
+		t.Fatal("Reconcile() returned nil, want the publish error so it is retried with backoff")
+	}
+
+	var updated vcv1alpha1.VerifiableCredentialRequest
+	if err := r.Get(context.Background(), key, &updated); err != nil {
+		t.Fatalf("failed to read back the request: %v", err)
+	}
+	c := meta.FindStatusCondition(updated.Status.Conditions, vcv1alpha1.ConditionTypeIdentityHubPublished)
+	if c == nil || c.Status != metav1.ConditionFalse {
+		t.Errorf("IdentityHubPublished = %v, want False after a failed publication", c)
 	}
 }

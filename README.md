@@ -61,7 +61,8 @@ and automatically renews them before expiry.
 - **Keycloak Support** -- First-class support for Keycloak as an OID4VCI issuer.
 - **IdentityHub Publication** -- Optionally push every issued and renewed
   credential into the credential store of an EDC IdentityHub, so its copy never
-  falls behind the one in the Secret.
+  falls behind the one in the Secret. A publication failure is retried on its
+  own, without going back to the issuer for a new credential.
 
 ## Quick Start
 
@@ -264,6 +265,12 @@ automatically. Short name: `vcr` (e.g. `kubectl get vcr`).
 | `status.renewalCount` | Total number of successful renewals. |
 | `status.credentialFormat` | Format of the stored credential. |
 | `status.conditions` | Standard Kubernetes conditions (`Ready`, `CredentialIssued`, `RenewalScheduled`, `Error`, and `IdentityHubPublished` when `spec.identityHub` is set). |
+
+`IdentityHubPublished=False` means the credential in the Secret is valid but the
+IdentityHub copy is behind it, so DCP exchanges may still present the previous
+credential. The operator retries only the publication in that state: it does not
+request a new credential from the issuer, and the stored copy and its rotation
+buffer are left untouched.
 
 ## Stored Secret Format
 
