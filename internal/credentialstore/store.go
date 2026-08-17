@@ -24,11 +24,18 @@ package credentialstore
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
+
+// ErrNotFound is returned by Retrieve when no credential exists at the given
+// TargetRef, or when the stored object exists but carries no credential
+// payload. Backends must wrap this sentinel so that callers can distinguish a
+// genuinely absent credential from a transient backend failure.
+var ErrNotFound = errors.New("credential not found in store")
 
 // CredentialStore abstracts the storage backend for obtained credentials.
 // The default implementation uses Kubernetes Secrets. Alternative backends
@@ -41,7 +48,10 @@ type CredentialStore interface {
 	Store(ctx context.Context, ref TargetRef, data *CredentialData) error
 
 	// Retrieve loads a previously stored credential from the storage
-	// backend. Returns an error if the credential does not exist.
+	// backend. Implementations must return an error wrapping ErrNotFound
+	// when no credential is stored at the given reference, or when the
+	// stored object exists but carries no credential payload. Any other
+	// error indicates a transient backend failure.
 	Retrieve(ctx context.Context, ref TargetRef) (*CredentialData, error)
 
 	// Delete removes a stored credential from the storage backend.
