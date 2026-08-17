@@ -38,6 +38,11 @@ const (
 	// ConditionTypeError indicates that a non-transient error has occurred
 	// that requires user intervention to resolve.
 	ConditionTypeError = "Error"
+
+	// ConditionTypeIdentityHubPublished indicates that the credential has been
+	// published into the credential store of the IdentityHub declared by
+	// spec.identityHub. Applies to VerifiableCredentialRequest only.
+	ConditionTypeIdentityHubPublished = "IdentityHubPublished"
 )
 
 // Condition reason constants provide machine-readable reasons for condition
@@ -92,6 +97,15 @@ const (
 	// without holderKeyRef.
 	ReasonHolderKeyInvalid = "HolderKeyInvalid"
 
+	// ReasonIdentityHubPublished indicates that the credential was successfully
+	// published into the IdentityHub credential store.
+	ReasonIdentityHubPublished = "IdentityHubPublished"
+
+	// ReasonIdentityHubPublishFailed indicates that the credential could not be
+	// published into the IdentityHub credential store, which leaves the
+	// IdentityHub serving the previous copy.
+	ReasonIdentityHubPublishFailed = "IdentityHubPublishFailed"
+
 	// ReasonStoredCredentialMissing indicates that a previously issued
 	// credential is no longer present in the storage backend (for example,
 	// the target Secret was deleted or emptied out-of-band), which triggers
@@ -104,6 +118,18 @@ type SecretReference struct {
 	// Name is the name of the Secret.
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
+}
+
+// SecretKeyReference is a reference to a single key of a Kubernetes Secret in
+// the same namespace.
+type SecretKeyReference struct {
+	// Name is the name of the Secret.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Key is the data key within the Secret.
+	// +kubebuilder:validation:MinLength=1
+	Key string `json:"key"`
 }
 
 // LocalObjectReference is a reference to a resource in the same namespace.

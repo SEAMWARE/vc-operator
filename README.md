@@ -59,6 +59,10 @@ and automatically renews them before expiry.
   identity via proof-of-possession JWTs. Supports both JWK-based and DID-based
   binding.
 - **Keycloak Support** -- First-class support for Keycloak as an OID4VCI issuer.
+- **IdentityHub Publication** -- Optionally push every issued and renewed
+  credential into the credential store of an EDC IdentityHub, so its copy never
+  falls behind the one in the Secret. A publication failure is retried on its
+  own, without going back to the issuer for a new credential.
 
 ## Quick Start
 
@@ -243,6 +247,12 @@ automatically. Short name: `vcr` (e.g. `kubectl get vcr`).
 | `spec.additionalClaims` | `map[string]string` | No | -- | Extra claims to include in the credential request (issuer-specific). |
 | `spec.holderKeyRef.name` | `string` | No | -- | Name of a Secret containing the holder's ECDSA P-256 private key in PEM format (data key `key.pem` or `tls.key`). When set, the operator signs a proof-of-possession JWT with this key, binding the credential to the holder. |
 | `spec.holderDID` | `string` | No | -- | DID URL to use as the `kid` header in the proof JWT instead of embedding the full JWK. Requires `holderKeyRef` to be set. |
+| `spec.identityHub.url` | `string` | Yes* | -- | Base URL of the IdentityHub Identity API including the version segment, e.g. `http://identityhub-service:8082/api/identity/v1alpha`. |
+| `spec.identityHub.participantId` | `string` | Yes* | -- | Participant context the credential belongs to, i.e. the participant's DID. Base64url-encoded into the request path by the operator. |
+| `spec.identityHub.apiKeyRef` | `object` | Yes* | -- | `name`/`key` of a Secret holding the IdentityHub api key, already in the composed `base64(participantContextId).secret` form. |
+| `spec.identityHub.credentialId` | `string` | No | request name | Id the credential is stored under in the IdentityHub. Must be stable so a renewal replaces the stored copy. |
+
+\* Required only when `spec.identityHub` is present, which is optional.
 
 **Status fields:**
 
@@ -254,7 +264,13 @@ automatically. Short name: `vcr` (e.g. `kubectl get vcr`).
 | `status.nextRenewalTime` | When the next renewal attempt is scheduled. |
 | `status.renewalCount` | Total number of successful renewals. |
 | `status.credentialFormat` | Format of the stored credential. |
-| `status.conditions` | Standard Kubernetes conditions (`Ready`, `CredentialIssued`, `RenewalScheduled`, `Error`). |
+| `status.conditions` | Standard Kubernetes conditions (`Ready`, `CredentialIssued`, `RenewalScheduled`, `Error`, and `IdentityHubPublished` when `spec.identityHub` is set). |
+
+`IdentityHubPublished=False` means the credential in the Secret is valid but the
+IdentityHub copy is behind it, so DCP exchanges may still present the previous
+credential. The operator retries only the publication in that state: it does not
+request a new credential from the issuer, and the stored copy and its rotation
+buffer are left untouched.
 
 ## Stored Secret Format
 
