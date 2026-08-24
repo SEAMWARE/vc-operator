@@ -7,7 +7,7 @@ domain: vc-operator.io
 layout:
 - go.kubebuilder.io/v4
 projectName: vc-operator
-repo: github.com/wistefan/vc-operator
+repo: github.com/SEAMWARE/vc-operator
 resources:
 - api:
     crdVersion: v1
@@ -16,7 +16,7 @@ resources:
   domain: vc-operator.io
   group: vc
   kind: CredentialIssuer
-  path: github.com/wistefan/vc-operator/api/v1alpha1
+  path: github.com/SEAMWARE/vc-operator/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -25,6 +25,6 @@ resources:
   domain: vc-operator.io
   group: vc
   kind: VerifiableCredentialRequest
-  path: github.com/wistefan/vc-operator/api/v1alpha1
+  path: github.com/SEAMWARE/vc-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

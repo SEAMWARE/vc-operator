@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/wistefan/vc-operator/internal/credentialstore"
+	"github.com/SEAMWARE/vc-operator/internal/credentialstore"
 )
 
 // newTestScheme creates a runtime scheme with the core v1 types registered.

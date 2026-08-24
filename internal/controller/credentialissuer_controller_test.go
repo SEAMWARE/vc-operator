@@ -31,8 +31,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	vcv1alpha1 "github.com/wistefan/vc-operator/api/v1alpha1"
-	"github.com/wistefan/vc-operator/internal/oid4vci"
+	vcv1alpha1 "github.com/SEAMWARE/vc-operator/api/v1alpha1"
+	"github.com/SEAMWARE/vc-operator/internal/oid4vci"
 )
 
 // fakeEventBufferSize is the buffer size for the fake event recorder channel.

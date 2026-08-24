@@ -34,7 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/wistefan/vc-operator/internal/credentialstore"
+	"github.com/SEAMWARE/vc-operator/internal/credentialstore"
 )
 
 // Secret data key constants define the keys used in the Kubernetes Secret's
