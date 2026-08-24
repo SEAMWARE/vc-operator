@@ -29,7 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/wistefan/vc-operator/test/utils"
+	"github.com/SEAMWARE/vc-operator/test/utils"
 )
 
 var (
