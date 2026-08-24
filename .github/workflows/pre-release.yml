@@ -115,7 +115,12 @@ jobs:
             LICENSE
 
   helm-chart:
-    needs: generate-version
+    # Also waits on build-scan-push: the chart's appVersion names the image
+    # built there, so publishing it before that job succeeds would ship a
+    # chart pointing at an image that was never pushed.
+    needs:
+      - generate-version
+      - build-scan-push
     uses: ./.github/workflows/helm-chart.yml
     with:
       app_version: ${{ needs.generate-version.outputs.version }}

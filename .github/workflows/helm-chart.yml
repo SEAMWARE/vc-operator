@@ -56,7 +56,11 @@ jobs:
           case "${{ inputs.bump }}" in
             major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
             minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            *)     PATCH=$((PATCH + 1)) ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+            *)
+              echo "::error::bump must be major, minor or patch, got '${{ inputs.bump }}'"
+              exit 1
+              ;;
           esac
           VERSION="${MAJOR}.${MINOR}.${PATCH}"
           if [[ "${{ inputs.pre_release }}" == "true" ]]; then
