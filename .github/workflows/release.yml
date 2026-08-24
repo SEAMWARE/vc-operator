@@ -12,6 +12,15 @@ on:
         required: true
       QUAY_PASSWORD:
         required: true
+    outputs:
+      version:
+        description: >-
+          The released operator version. Empty when the merged PR carried no
+          semver label, i.e. when nothing was released.
+        value: ${{ jobs.generate-version.outputs.version }}
+      bump:
+        description: The semver level this release was bumped by.
+        value: ${{ jobs.generate-version.outputs.bump }}
 
 env:
   REGISTRY: quay.io
@@ -24,6 +33,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       has_version: ${{ steps.version.outputs.has_version }}
+      bump: ${{ steps.version.outputs.bump }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,9 +72,13 @@ jobs:
           if [[ -n "${{ inputs.version }}" ]]; then
             echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
             echo "has_version=true" >> $GITHUB_OUTPUT
+            # A manually supplied version carries no label to derive a chart
+            # bump from, so the chart moves by a patch.
+            echo "bump=patch" >> $GITHUB_OUTPUT
           elif [[ "${{ steps.label.outputs.has_bump }}" == "true" ]]; then
             echo "version=${{ steps.semver.outputs.version }}" >> $GITHUB_OUTPUT
             echo "has_version=true" >> $GITHUB_OUTPUT
+            echo "bump=${{ steps.label.outputs.bump }}" >> $GITHUB_OUTPUT
           else
             echo "has_version=false" >> $GITHUB_OUTPUT
           fi
