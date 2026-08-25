@@ -35,7 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	vcv1alpha1 "github.com/wistefan/vc-operator/api/v1alpha1"
+	vcv1alpha1 "github.com/SEAMWARE/vc-operator/api/v1alpha1"
 )
 
 // Test timeout and polling constants for Eventually/Consistently assertions.

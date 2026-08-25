@@ -15,8 +15,8 @@ keywords:
   - fiware
   - kubernetes-operator
   - credential-management
-home: https://github.com/wistefan/vc-operator
+home: https://github.com/SEAMWARE/vc-operator
 sources:
-  - https://github.com/wistefan/vc-operator
+  - https://github.com/SEAMWARE/vc-operator
 maintainers:
   - name: wistefan

@@ -54,10 +54,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	vcv1alpha1 "github.com/wistefan/vc-operator/api/v1alpha1"
-	"github.com/wistefan/vc-operator/internal/controller"
-	kubestore "github.com/wistefan/vc-operator/internal/credentialstore/kubernetes"
-	"github.com/wistefan/vc-operator/internal/oid4vci"
+	vcv1alpha1 "github.com/SEAMWARE/vc-operator/api/v1alpha1"
+	"github.com/SEAMWARE/vc-operator/internal/controller"
+	kubestore "github.com/SEAMWARE/vc-operator/internal/credentialstore/kubernetes"
+	"github.com/SEAMWARE/vc-operator/internal/oid4vci"
 )
 
 // Package-level test infrastructure shared across all integration tests.

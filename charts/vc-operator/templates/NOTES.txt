@@ -53,4 +53,4 @@ To get started, create a CredentialIssuer and a VerifiableCredentialRequest:
      kubectl get credentialissuers -n {{ .Release.Namespace }}
      kubectl get verifiablecredentialrequests -n {{ .Release.Namespace }}
 
-For more information, visit: https://github.com/wistefan/vc-operator
+For more information, visit: https://github.com/SEAMWARE/vc-operator

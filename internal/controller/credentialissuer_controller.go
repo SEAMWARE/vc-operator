@@ -34,8 +34,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	vcv1alpha1 "github.com/wistefan/vc-operator/api/v1alpha1"
-	"github.com/wistefan/vc-operator/internal/oid4vci"
+	vcv1alpha1 "github.com/SEAMWARE/vc-operator/api/v1alpha1"
+	"github.com/SEAMWARE/vc-operator/internal/oid4vci"
 )
 
 const (
