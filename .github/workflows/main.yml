@@ -33,12 +33,12 @@ jobs:
       QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
 
   helm-chart:
-    needs:
-      - lint
-      - unit-test
-      - e2e-test
-      - security-analysis
+    needs: release
+    if: needs.release.outputs.version != ''
     uses: ./.github/workflows/helm-chart.yml
+    with:
+      app_version: ${{ needs.release.outputs.version }}
+      bump: ${{ needs.release.outputs.bump }}
     secrets:
       QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
       QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}

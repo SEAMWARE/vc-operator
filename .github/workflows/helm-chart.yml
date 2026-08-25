@@ -3,6 +3,16 @@ name: Helm Chart
 on:
   workflow_call:
     inputs:
+      app_version:
+        description: >-
+          Operator image version this chart deploys. Written to the chart's
+          appVersion so the chart always tracks the released image.
+        required: true
+        type: string
+      bump:
+        description: semver level (major|minor|patch) to bump the chart version by.
+        required: true
+        type: string
       pre_release:
         type: boolean
         default: false
@@ -30,52 +40,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect chart changes
-        id: changes
-        run: |
-          if [[ "${{ inputs.pre_release }}" == "true" ]]; then
-            BASE_SHA=$(git merge-base HEAD "origin/${{ github.event.pull_request.base.ref }}")
-            DIFF_COUNT=$(git diff --name-only "$BASE_SHA" HEAD -- charts/vc-operator/ | wc -l)
-          else
-            DIFF_COUNT=$(git diff --name-only HEAD~1 HEAD -- charts/vc-operator/ | wc -l)
-          fi
-          if [[ "$DIFF_COUNT" -gt 0 ]]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Get merged pull request
-        if: steps.changes.outputs.changed == 'true' && inputs.pre_release == false
-        id: merged-pr
-        uses: actions-ecosystem/action-get-merged-pull-request@v1.0.1
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Detect semver label
-        if: steps.changes.outputs.changed == 'true'
-        id: label
-        run: |
-          if [[ "${{ inputs.pre_release }}" == "true" ]]; then
-            LABELS=$(echo '${{ toJSON(github.event.pull_request.labels.*.name) }}' | jq -r '.[]' 2>/dev/null || true)
-          else
-            LABELS="${{ steps.merged-pr.outputs.labels }}"
-          fi
-          BUMP=""
-          while IFS= read -r label; do
-            case "$label" in
-              major|minor|patch) BUMP="$label"; break ;;
-            esac
-          done <<< "$LABELS"
-          if [[ -n "$BUMP" ]]; then
-            echo "bump=$BUMP" >> $GITHUB_OUTPUT
-            echo "has_bump=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_bump=false" >> $GITHUB_OUTPUT
-          fi
-
+      # The chart is published on every release, whether or not a file under
+      # charts/ changed: appVersion tracks the operator image, so a chart that
+      # is not republished keeps pointing consumers at a stale image.
       - name: Compute chart version
-        if: steps.changes.outputs.changed == 'true' && steps.label.outputs.has_bump == 'true'
         id: version
         run: |
           LATEST_TAG=$(git tag -l "${CHART_TAG_PREFIX}*" --sort=-version:refname | head -1)
@@ -85,10 +53,14 @@ jobs:
             CURRENT="${LATEST_TAG#${CHART_TAG_PREFIX}}"
           fi
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          case "${{ steps.label.outputs.bump }}" in
+          case "${{ inputs.bump }}" in
             major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
             minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
             patch) PATCH=$((PATCH + 1)) ;;
+            *)
+              echo "::error::bump must be major, minor or patch, got '${{ inputs.bump }}'"
+              exit 1
+              ;;
           esac
           VERSION="${MAJOR}.${MINOR}.${PATCH}"
           if [[ "${{ inputs.pre_release }}" == "true" ]]; then
@@ -97,18 +69,16 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Set up Helm
-        if: steps.version.outputs.version != ''
         uses: azure/setup-helm@v4
 
       - name: Log in to OCI registry
-        if: steps.version.outputs.version != ''
         run: |
           echo "${{ secrets.QUAY_PASSWORD }}" | helm registry login quay.io \
             --username "${{ secrets.QUAY_USERNAME }}" \
             --password-stdin
 
       - name: Check if version already exists
-        if: steps.version.outputs.version != '' && inputs.pre_release == false
+        if: inputs.pre_release == false
         id: exists
         run: |
           if helm show chart "${{ env.OCI_REPO }}/vc-operator" \
@@ -119,20 +89,16 @@ jobs:
           fi
 
       - name: Package and push chart
-        if: |
-          steps.version.outputs.version != '' &&
-          (inputs.pre_release || steps.exists.outputs.exists != 'true')
+        if: inputs.pre_release || steps.exists.outputs.exists != 'true'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           sed -i "s/^version:.*/version: ${VERSION}/" "${{ env.CHART_DIR }}/Chart.yaml"
+          sed -i "s/^appVersion:.*/appVersion: \"${{ inputs.app_version }}\"/" "${{ env.CHART_DIR }}/Chart.yaml"
           helm package "${{ env.CHART_DIR }}"
           helm push "vc-operator-${VERSION}.tgz" "${{ env.OCI_REPO }}"
 
       - name: Create chart version tag
-        if: |
-          steps.version.outputs.version != '' &&
-          inputs.pre_release == false &&
-          steps.exists.outputs.exists != 'true'
+        if: inputs.pre_release == false && steps.exists.outputs.exists != 'true'
         run: |
           git tag "${CHART_TAG_PREFIX}${{ steps.version.outputs.version }}"
           git push origin "${CHART_TAG_PREFIX}${{ steps.version.outputs.version }}"

@@ -6,8 +6,8 @@ description: >-
   (OpenID for Verifiable Credential Issuance), stores them as Kubernetes
   Secrets, and automatically renews them before expiry.
 type: application
-version: 0.1.0
-appVersion: "0.1.3"
+version: 0.1.3
+appVersion: "0.2.0"
 kubeVersion: ">= 1.26.0"
 keywords:
   - verifiable-credentials
