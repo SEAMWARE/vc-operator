@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.out.outputs.version }}
+      bump: ${{ steps.bump.outputs.match }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,8 +115,16 @@ jobs:
             LICENSE
 
   helm-chart:
+    # Also waits on build-scan-push: the chart's appVersion names the image
+    # built there, so publishing it before that job succeeds would ship a
+    # chart pointing at an image that was never pushed.
+    needs:
+      - generate-version
+      - build-scan-push
     uses: ./.github/workflows/helm-chart.yml
     with:
+      app_version: ${{ needs.generate-version.outputs.version }}
+      bump: ${{ needs.generate-version.outputs.bump }}
       pre_release: true
       pr_number: ${{ github.event.pull_request.number }}
     secrets:
