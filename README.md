@@ -86,7 +86,7 @@ helm install vc-operator ./charts/vc-operator \
 make install
 
 # Deploy the operator
-make deploy IMG=ghcr.io/wistefan/vc-operator:latest
+make deploy IMG=quay.io/seamware/vc-operator:latest
 ```
 
 ### Create Your First Credential
@@ -315,7 +315,7 @@ full list of configurable values. Key settings:
 | Value | Default | Description |
 |-------|---------|-------------|
 | `replicaCount` | `1` | Number of operator replicas. |
-| `image.repository` | `ghcr.io/wistefan/vc-operator` | Container image repository. |
+| `image.repository` | `quay.io/seamware/vc-operator` | Container image repository. |
 | `image.tag` | Chart `appVersion` | Container image tag. |
 | `leaderElection.enabled` | `true` | Enable leader election. |
 | `metrics.bindAddress` | `:8443` | Metrics endpoint bind address. |

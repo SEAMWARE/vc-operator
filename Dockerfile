@@ -25,7 +25,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 # reducing the attack surface. See https://github.com/GoogleContainerTools/distroless
 FROM gcr.io/distroless/static:nonroot
 
-LABEL org.opencontainers.image.source="https://github.com/wistefan/vc-operator"
+LABEL org.opencontainers.image.source="https://github.com/SEAMWARE/vc-operator"
 LABEL org.opencontainers.image.description="VC Operator - Kubernetes operator for Verifiable Credentials via OID4VCI"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 

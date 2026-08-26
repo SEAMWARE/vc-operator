@@ -1,4 +1,4 @@
-module github.com/wistefan/vc-operator
+module github.com/SEAMWARE/vc-operator
 
 go 1.25.10
 

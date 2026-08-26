@@ -27,7 +27,7 @@ The following tools are installed automatically by the Makefile on first use:
 ### Clone and Build
 
 ```bash
-git clone https://github.com/wistefan/vc-operator.git
+git clone https://github.com/SEAMWARE/vc-operator.git
 cd vc-operator
 
 # Run code generators (DeepCopy methods, CRD manifests)

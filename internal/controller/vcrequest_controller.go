@@ -38,10 +38,10 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	vcv1alpha1 "github.com/wistefan/vc-operator/api/v1alpha1"
-	"github.com/wistefan/vc-operator/internal/credential"
-	"github.com/wistefan/vc-operator/internal/credentialstore"
-	"github.com/wistefan/vc-operator/internal/oid4vci"
+	vcv1alpha1 "github.com/SEAMWARE/vc-operator/api/v1alpha1"
+	"github.com/SEAMWARE/vc-operator/internal/credential"
+	"github.com/SEAMWARE/vc-operator/internal/credentialstore"
+	"github.com/SEAMWARE/vc-operator/internal/oid4vci"
 )
 
 const (
