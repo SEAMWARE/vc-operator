@@ -87,10 +87,6 @@ rbac:
   # -- Whether to create RBAC resources (ClusterRole, ClusterRoleBinding).
   create: true
 
-crds:
-  # -- Whether to install CRDs with the Helm chart.
-  install: true
-
 # -- Interval to wait before retrying reconciliation after a non-transient error.
 # Lower values (e.g., "5s") speed up recovery in test environments.
 # Accepts Go duration strings: "5s", "30s", "1m", etc.
