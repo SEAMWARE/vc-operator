@@ -1,11 +1,9 @@
 vc-operator has been installed successfully!
 
-{{- if .Values.crds.install }}
 
-CRDs installed:
+CRDs (installed from the chart's crds/ folder, unless --skip-crds was given):
   - credentialissuers.vc.vc-operator.io
   - verifiablecredentialrequests.vc.vc-operator.io
-{{- end }}
 
 To get started, create a CredentialIssuer and a VerifiableCredentialRequest:
 

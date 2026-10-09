@@ -79,6 +79,23 @@ helm install vc-operator ./charts/vc-operator \
   --create-namespace
 ```
 
+The CRDs ship in the chart's `crds/` folder. Helm installs them before anything else, so a
+chart that depends on this one can create `CredentialIssuer` and
+`VerifiableCredentialRequest` resources in the same release. If the CRDs already exist (e.g.
+installed by another release), Helm leaves them as they are; to manage them yourself, pass
+`--skip-crds`.
+
+Helm never upgrades or deletes CRDs from `crds/`. When a new chart version changes them,
+apply them before upgrading:
+
+```bash
+kubectl apply -f ./charts/vc-operator/crds/
+```
+
+Releases installed with chart 0.1.5 or older keep their CRDs as part of the release: on
+upgrade they are updated with the chart and marked with `helm.sh/resource-policy: keep`, so
+uninstalling the release no longer deletes them.
+
 ### Install with Kustomize
 
 ```bash
@@ -322,7 +339,6 @@ full list of configurable values. Key settings:
 | `metrics.secure` | `true` | Serve metrics over HTTPS. |
 | `resources.limits.cpu` | `500m` | CPU limit. |
 | `resources.limits.memory` | `128Mi` | Memory limit. |
-| `crds.install` | `true` | Install CRDs with the Helm chart. |
 
 ### Prometheus Metrics
 
