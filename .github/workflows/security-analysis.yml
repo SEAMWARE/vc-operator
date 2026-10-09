@@ -22,8 +22,10 @@ jobs:
           output-format: sarif
           output-file: govulncheck-results.sarif
 
+      # Reporting the findings must not block a release, like the analysis above.
       - uses: github/codeql-action/upload-sarif@v4
         if: always()
+        continue-on-error: true
         with:
           sarif_file: govulncheck-results.sarif
 
@@ -44,7 +46,9 @@ jobs:
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           gosec -fmt sarif -out gosec-results.sarif ./...
 
+      # Reporting the findings must not block a release, like the analysis above.
       - uses: github/codeql-action/upload-sarif@v4
         if: always()
+        continue-on-error: true
         with:
           sarif_file: gosec-results.sarif
