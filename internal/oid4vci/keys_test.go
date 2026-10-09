@@ -114,15 +114,12 @@ func TestKeyManager_RoundTrip(t *testing.T) {
 		t.Fatalf("failed to load key from PEM: %v", err)
 	}
 
-	// Verify the keys are the same by comparing their public key coordinates
-	if km1.PublicKey().X.Cmp(km2.PublicKey().X) != 0 {
-		t.Error("public key X coordinates do not match after round-trip")
+	// Verify the keys are the same after the round-trip
+	if !km1.PublicKey().Equal(km2.PublicKey()) {
+		t.Error("public keys do not match after round-trip")
 	}
-	if km1.PublicKey().Y.Cmp(km2.PublicKey().Y) != 0 {
-		t.Error("public key Y coordinates do not match after round-trip")
-	}
-	if km1.PrivateKey().D.Cmp(km2.PrivateKey().D) != 0 {
-		t.Error("private key D values do not match after round-trip")
+	if !km1.PrivateKey().Equal(km2.PrivateKey()) {
+		t.Error("private keys do not match after round-trip")
 	}
 }
 
@@ -140,6 +137,7 @@ func TestKeyManager_MarshalPrivateKeyPEM(t *testing.T) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
 		t.Fatal("failed to decode PEM block")
+		return // staticcheck (SA5011) does not see that t.Fatal stops the test with Go 1.26
 	}
 	if block.Type != PEMBlockTypeECPrivateKey {
 		t.Errorf("PEM block type: got %s, want %s", block.Type, PEMBlockTypeECPrivateKey)
@@ -169,6 +167,7 @@ func TestKeyManager_MarshalPublicKeyPEM(t *testing.T) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
 		t.Fatal("failed to decode PEM block")
+		return // staticcheck (SA5011) does not see that t.Fatal stops the test with Go 1.26
 	}
 	if block.Type != PEMBlockTypePublicKey {
 		t.Errorf("PEM block type: got %s, want %s", block.Type, PEMBlockTypePublicKey)
@@ -199,7 +198,7 @@ func TestMultipleKeyManagersProduceDifferentKeys(t *testing.T) {
 		t.Fatalf("failed to create second key manager: %v", err)
 	}
 
-	if km1.PrivateKey().D.Cmp(km2.PrivateKey().D) == 0 {
+	if km1.PrivateKey().Equal(km2.PrivateKey()) {
 		t.Error("two separately generated key managers should have different private keys")
 	}
 }

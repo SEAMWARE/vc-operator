@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"time"
 
@@ -202,7 +201,12 @@ func GenerateProofJWT(privateKey *ecdsa.PrivateKey, issuerURL string, cNonce str
 	if holderDID != "" {
 		token.Header["kid"] = holderDID
 	} else {
-		token.Header["jwk"] = buildJWKFromPublicKey(&privateKey.PublicKey)
+		jwk, err := buildJWKFromPublicKey(&privateKey.PublicKey)
+		if err != nil {
+			packageLogger.Error(err, "Failed to encode the public key as JWK", "audience", issuerURL)
+			return "", fmt.Errorf("%w: %v", ErrProofGeneration, err)
+		}
+		token.Header["jwk"] = jwk
 	}
 
 	signedToken, err := token.SignedString(privateKey)
@@ -217,30 +221,22 @@ func GenerateProofJWT(privateKey *ecdsa.PrivateKey, issuerURL string, cNonce str
 
 // buildJWKFromPublicKey constructs a JWK (JSON Web Key) representation
 // of an ECDSA P-256 public key for inclusion in the JWT header.
-func buildJWKFromPublicKey(pub *ecdsa.PublicKey) map[string]any {
+func buildJWKFromPublicKey(pub *ecdsa.PublicKey) (map[string]any, error) {
+	// uncompressed point encoding: 0x04 || X || Y, each coordinate coordByteLength bytes long
+	point, err := pub.Bytes()
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
 		"kty": "EC",
 		"crv": "P-256",
-		"x":   base64URLEncode(pub.X.Bytes(), coordByteLength),
-		"y":   base64URLEncode(pub.Y.Bytes(), coordByteLength),
-	}
+		"x":   base64.RawURLEncoding.EncodeToString(point[1 : 1+coordByteLength]),
+		"y":   base64.RawURLEncoding.EncodeToString(point[1+coordByteLength:]),
+	}, nil
 }
 
 // coordByteLength is the byte length of an ECDSA P-256 coordinate (32 bytes for a 256-bit curve).
 const coordByteLength = 32
-
-// base64URLEncode encodes bytes to base64url without padding,
-// left-padding the input to the specified length if necessary.
-func base64URLEncode(b []byte, length int) string {
-	// Left-pad to the required length
-	padded := make([]byte, length)
-	src := b
-	if len(src) > length {
-		src = src[len(src)-length:]
-	}
-	copy(padded[length-len(src):], src)
-	return base64.RawURLEncoding.EncodeToString(padded)
-}
 
 // VerifyProofJWT verifies and parses a proof-of-possession JWT.
 // This is primarily useful for testing. It extracts the public key
@@ -295,10 +291,19 @@ func parseJWKToPublicKey(jwk map[string]any) (*ecdsa.PublicKey, error) {
 		return nil, fmt.Errorf("invalid y coordinate encoding: %v", err)
 	}
 
-	pub := &ecdsa.PublicKey{
-		Curve: elliptic.P256(),
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
+	if len(xBytes) > coordByteLength || len(yBytes) > coordByteLength {
+		return nil, fmt.Errorf("invalid coordinate length")
+	}
+
+	// uncompressed point encoding: 0x04 || X || Y, each coordinate left-padded to coordByteLength
+	point := make([]byte, 1+2*coordByteLength)
+	point[0] = 4
+	copy(point[1+coordByteLength-len(xBytes):1+coordByteLength], xBytes)
+	copy(point[len(point)-len(yBytes):], yBytes)
+
+	pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), point)
+	if err != nil {
+		return nil, fmt.Errorf("invalid public key: %v", err)
 	}
 
 	return pub, nil
